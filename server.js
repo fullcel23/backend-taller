@@ -9,81 +9,106 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = 'taller_secreto_2024';
+const JWT_SECRET = 'mi_secreto_2024';
 
-// ============ MODELOS ============
+// ============================================
+// MODELOS
+// ============================================
+
 const UsuarioSchema = new mongoose.Schema({
   nombre: String,
-  email: { type: String, unique: true },
+  email: String,
   password: String,
   rol: String,
-  activo: { type: Boolean, default: true },
-  fechaExpiracion: Date
+  activo: { type: Boolean, default: true }
 });
 
 UsuarioSchema.pre('save', function(next) {
   if (!this.isModified('password')) return next();
-  bcrypt.genSalt(10, (err, salt) => {
+  bcrypt.hash(this.password, 10, (err, hash) => {
     if (err) return next(err);
-    bcrypt.hash(this.password, salt, (err, hash) => {
-      if (err) return next(err);
-      this.password = hash;
-      next();
-    });
+    this.password = hash;
+    next();
   });
 });
 
-UsuarioSchema.methods.compararPassword = async function(password) {
-  return await bcrypt.compare(password, this.password);
+UsuarioSchema.methods.compararPassword = function(password, cb) {
+  bcrypt.compare(password, this.password, cb);
 };
 
 const Usuario = mongoose.model('Usuario', UsuarioSchema);
 
-const TrabajoSchema = new mongoose.Schema({
-  cliente: String,
-  telefono: String,
-  equipo: String,
-  modelo: String,
-  falla: String,
-  password: String,
-  precio: Number,
-  estado: String,
+const Trabajo = mongoose.model('Trabajo', new mongoose.Schema({
+  cliente: String, telefono: String, equipo: String, modelo: String,
+  falla: String, password: String, precio: Number, estado: String,
   fechaIngreso: { type: Date, default: Date.now }
-});
+}));
 
-const Trabajo = mongoose.model('Trabajo', TrabajoSchema);
+const Producto = mongoose.model('Producto', new mongoose.Schema({
+  nombre: String, precio: Number, costo: Number, cantidad: Number, categoria: String
+}));
 
-const ProductoSchema = new mongoose.Schema({
-  nombre: String,
-  precio: Number,
-  costo: Number,
-  cantidad: Number,
-  categoria: String,
-  stockMinimo: { type: Number, default: 5 }
-});
+// ============================================
+// FUNCIÓN PARA CREAR ADMIN AUTOMÁTICAMENTE
+// ============================================
 
-const Producto = mongoose.model('Producto', ProductoSchema);
+async function crearAdminSiNoExiste() {
+  try {
+    const adminExists = await Usuario.findOne({ email: 'admin@taller.com' });
+    if (!adminExists) {
+      const hashedPassword = await bcrypt.hash('admin123', 10);
+      const admin = new Usuario({
+        nombre: 'Administrador',
+        email: 'admin@taller.com',
+        password: hashedPassword,
+        rol: 'admin',
+        activo: true
+      });
+      await admin.save();
+      console.log('✅ Administrador creado automáticamente');
+      console.log('📧 Email: admin@taller.com');
+      console.log('🔑 Contraseña: admin123');
+    } else {
+      console.log('✅ Administrador ya existe');
+    }
+  } catch (error) {
+    console.error('❌ Error al crear admin:', error.message);
+  }
+}
 
-// ============ RUTAS ============
+// ============================================
+// RUTAS
+// ============================================
 
-// Login
 app.post('/api/usuarios/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     const usuario = await Usuario.findOne({ email });
-    if (!usuario) return res.status(401).json({ success: false, error: 'Email o contraseña incorrectos' });
+    if (!usuario) {
+      return res.status(401).json({ success: false, error: 'Credenciales incorrectas' });
+    }
     
-    const valido = await usuario.compararPassword(password);
-    if (!valido) return res.status(401).json({ success: false, error: 'Email o contraseña incorrectos' });
-    
-    const token = jwt.sign({ id: usuario._id, rol: usuario.rol }, JWT_SECRET);
-    res.json({ success: true, data: { _id: usuario._id, nombre: usuario.nombre, email: usuario.email, rol: usuario.rol, token } });
+    usuario.compararPassword(password, (err, valido) => {
+      if (err || !valido) {
+        return res.status(401).json({ success: false, error: 'Credenciales incorrectas' });
+      }
+      const token = jwt.sign({ id: usuario._id, rol: usuario.rol }, JWT_SECRET);
+      res.json({
+        success: true,
+        data: {
+          _id: usuario._id,
+          nombre: usuario.nombre,
+          email: usuario.email,
+          rol: usuario.rol,
+          token
+        }
+      });
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Trabajos
 app.post('/api/trabajos', async (req, res) => {
   try {
     const trabajo = new Trabajo(req.body);
@@ -103,7 +128,24 @@ app.get('/api/trabajos', async (req, res) => {
   }
 });
 
-// Productos
+app.put('/api/trabajos/:id', async (req, res) => {
+  try {
+    const trabajo = await Trabajo.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json({ success: true, data: trabajo });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/trabajos/:id', async (req, res) => {
+  try {
+    await Trabajo.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Eliminado' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/productos', async (req, res) => {
   try {
     const producto = new Producto(req.body);
@@ -136,17 +178,27 @@ app.patch('/api/productos/:id/stock', async (req, res) => {
   }
 });
 
-// Ruta de prueba
 app.get('/api/test', (req, res) => {
-  res.json({ message: 'API funcionando correctamente!' });
+  res.json({ mensaje: '✅ Backend funcionando!' });
 });
 
-// Conectar a MongoDB
-if (process.env.MONGODB_URI) {
-  mongoose.connect(process.env.MONGODB_URI)
-    .then(() => console.log('✅ Conectado a MongoDB Atlas'))
-    .catch(err => console.log('❌ Error:', err.message));
+// ============================================
+// CONEXIÓN A MONGODB Y INICIO
+// ============================================
+
+const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  console.error('❌ Error: MONGODB_URI no está configurada');
+  process.exit(1);
 }
+
+mongoose.connect(MONGODB_URI)
+  .then(async () => {
+    console.log('✅ Conectado a MongoDB Atlas');
+    await crearAdminSiNoExiste(); // 👈 Esto crea el admin automáticamente
+  })
+  .catch(err => console.error('❌ Error de conexión:', err.message));
 
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
